@@ -1,5 +1,5 @@
+﻿from pandas import read_excel
 from pandas import DataFrame
-from pandas import read_excel
 from math import ceil
 from math import floor
 from random import shuffle
@@ -12,7 +12,6 @@ def main():
     queue = assign_injection_names(sample_queue(max_sample, inputs, inj_info))
     queue_csv = DataFrame(data=queue, dtype=str)
     save_to_file(inputs, queue_csv)
-    input("Press enter to exit program")
 
 
 def assign_injection_names(queue: list):
@@ -35,8 +34,11 @@ def assign_injection_names(queue: list):
         final_queue['Well'].append(well)
         plate = sample[2]
         final_queue['Plate'].append(plate)
-        final_queue['Injection Name'].append("{}-{}.{}-{}".format(i, well, plate, sample_name))
         final_queue['InjWell'].append(make_address(well, plate))
+        # Conditional for use in Excel
+        if len(well) == 2:
+            well = well[0] + '0' + well[1]
+        final_queue['Injection Name'].append("{}-{}.{}-{}".format(str(i).zfill(3), plate, well, sample_name))
         final_queue['Non-random index'].append(sample[3])
         i += 1
     return final_queue
@@ -51,7 +53,7 @@ def make_address(well: str, plate: str):
     """
     plate_list = ['G', 'R', 'Y']
     try:
-        plate = int(plate) % 3
+        plate = int(plate) % 3 - 1
         address = plate_list[plate] + ':' + well
         return address
     except ValueError:
@@ -73,17 +75,18 @@ def get_inputs():
     inputs['client'] = df.at[2, 0][18:].split()[1]
     samples = list()
     inputs['samples'] = samples
-    row_num, col_num = df.shape
-    inputs['batch'] = get_batch_size()
+    row_num = df.shape[0]
 
     for ind in range(10, row_num):
-        samples.append(df.at[ind, col_num-1].replace(" ", ""))
+        samples.append(str(df.at[ind, 4]).strip())
+
+    inputs['batch'] = get_batch_size()
     inputs['minix'] = input("Please enter MX id: ").strip()
     inputs['platform'] = get_platform()
     inputs['matrix'] = df.at[8, 0].replace(
         "Specimen Type: (e.g.plasma, serum, stool…)",
         "").strip()
-    inputs['random'] = get_bool('Do you want to randomize samples? (y/n): ')
+    inputs['random'] = get_bool('Do you want to randomize samples? (y/n):')
 
     return inputs
 
@@ -118,11 +121,11 @@ def get_batch_size():
     """
     Fetches size of batches for use in generate_partition().
     Leaving blank returns 0
-    returns int
+    Else returns int
     """
     while True:
+        print('Please enter the number of samples between standards desired.')
         try:
-            print('Please enter the number of samples between standards desired.')
             batch = input('(Leave blank for auto-calculation): ').strip()
             return int(batch)
         except ValueError:
@@ -193,7 +196,7 @@ def make_sample_partition(sample_no: int, batch_size: int):
     :param batch_size: desired # of samples between cal curve instances
     :return: partition: tuple of int, distribution of the samples between cal curve instances
         If batch size was not specified, batch sizes will be roughly even (20-25 samples)
-        If batch size was specified as n, the last batch size may from 1-n samples long
+        If batch size was specified as n, the last batch size may from vary anywhere from 1-n samples long
     """
     # Auto-calculation in case of no inputs
     if not batch_size:
@@ -231,15 +234,15 @@ def sample_queue(sample_no: int, inputs: dict, inj_info: list):
     platform = inputs['platform']
     cal_curve_no = 1
     pool_no = 1
-    methanol_no = 1
+    wash_no = 1
     plate_num = 1
-    # Begin with methanols, Std curves, and test injections
-    queue.extend(methanols(3, methanol_no))
-    methanol_no = 4
-    queue.extend(cal_curve(0, 1, platform, methanol_no, pool_no))
+    # Begin with solvent washes, Std curves, and test injections
+    queue.extend(washes(3, wash_no))
+    wash_no = 4
+    queue.extend(cal_curve(0, 1, platform, wash_no, pool_no))
     queue.extend(qc_blanks(plate_num))
     # Iterate variables
-    methanol_no += 1
+    wash_no += 1
     pool_no += 1
 
     for sample in inj_info:
@@ -249,13 +252,13 @@ def sample_queue(sample_no: int, inputs: dict, inj_info: list):
             queue.extend(qc_blanks(plate_num))
         # Add sample
         queue.append(sample)
-        # At the end of the batch, add cal curves & MeOH
+        # At the end of the batch, add cal curves & solvent wash
         batch_position += 1
         if batch_position == partition[batch]:
             batch_position = 0
             batch += 1
-            queue.extend(cal_curve(cal_curve_state, cal_curve_no, platform, methanol_no, pool_no))
-            methanol_no += 1
+            queue.extend(cal_curve(cal_curve_state, cal_curve_no, platform, wash_no, pool_no))
+            wash_no += 1
             # Add on pool if necessary
             if cal_curve_state < 2:
                 pool_no += 1
@@ -265,8 +268,8 @@ def sample_queue(sample_no: int, inputs: dict, inj_info: list):
                 cal_curve_no += 1
             else:
                 cal_curve_state += 1
-    # Final MeOH wash injections
-    queue.extend(methanols(2, methanol_no))
+    # Final solvent wash injections
+    queue.extend(washes(2, wash_no))
     return queue
 
 
@@ -274,27 +277,27 @@ def qc_blanks(plate_num):
     blank_1 = ('Blank{}'.format(str(plate_num*2 - 1)), 'A1', str(plate_num), 'QC')
     blank_2 = ('Blank{}'.format(str(plate_num*2)), 'A2', str(plate_num), 'QC')
     ist1 = ('IST{}'.format(str(plate_num*2 - 1)), 'A3', str(plate_num), 'QC')
-    ist2 = ('IST2'.format(str(plate_num*2)), 'A3', str(plate_num), 'QC')
+    ist2 = ('IST{}'.format(str(plate_num*2)), 'A4', str(plate_num), 'QC')
     return [blank_1, blank_2, ist1, ist2]
 
 
-def cal_curve(state: int, number: int, platform: str, methanol_no: int, pool_no: int):
+def cal_curve(state: int, number: int, platform: str, wash_no: int, pool_no: int):
     """
     Generates list of cal curve, qc, and  blank samples to append in sample_queue()
     :param state: int, represents the 0369, 036, 147, or 258 series of cal curve injs
     :param number: int, The number of cal curves already constructed, indicates row that it exists in
     :param platform: str, (BA Ster or Oxy)
-    :param methanol_no: int, he number of methanols already run
+    :param wash_no: int, the number of solvent washes already run
     :param pool_no: int, pools already run
     :return: list of tuples
     """
     cal_list = list()
-    std_plate_name = "Std" + str(ceil(number/8))
+    std_plate_name = "SP" + str(ceil(number/7))
 
-    row = list('ABCDEFG')[(number-1) % 8]
+    row = list('ABCDEFG')[(number-1) % 7]
     if state < 2:
         wells = [0, 3, 6]
-        if state == 0:
+        if state == 0 and platform != "Oxy":
             wells.append(9)
     elif state == 2:
         wells = [1, 4, 7]
@@ -305,37 +308,39 @@ def cal_curve(state: int, number: int, platform: str, methanol_no: int, pool_no:
         inj_name = "{}Std{}".format(platform, str(well))
         well_name = row + str(well + 1)
         cal_list.append(tuple([inj_name, well_name, std_plate_name, 'QC']))
-    cal_list.append(_methanol(methanol_no))
+    cal_list.append(_wash(wash_no))
     if state < 2:
         cal_list.append(add_pool(pool_no))
 
     return cal_list
 
 
-def _methanol(methanol_no: int):
+def _wash(wash_no: int):
     """
-    Generates a single methanol injection tuple
-    :param methanol_no: int, number of methanol injection
+    Generates a single solvent wash injection tuple
+    :param wash_no: int, number of solvent wash injection
     :return: tuple, injection
     """
-    meoh_wells = ['A11', 'A12', 'B11', 'B12', 'C11', 'C12', 'D11', 'D12', 'E11', 'E12', 'F11', 'F12', 'G11', 'G12']
-    name = "MeOH-{}".format(str(methanol_no))
-    well = meoh_wells[methanol_no % 12]
-    plate = 'Std' + str(ceil(methanol_no/12))
+    solvent_wells = ['A11', 'A12', 'B11', 'B12', 'C11', 'C12', 'D11', 'D12', 'E11', 'E12', 'F11', 'F12', 'G11', 'G12',
+                     'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12'
+                     ]
+    name = "Wash-{}".format(str(wash_no))
+    well = solvent_wells[wash_no % 26 - 1]
+    plate = 'SP' + str(ceil(wash_no/26))
     return tuple([name, well, plate, 'QC'])
 
 
-def methanols(repl: int, methanol_no: int):
+def washes(repl: int, wash_no: int):
     """
-    Generates repl number of methanols
-    :param repl:
-    :param methanol_no:
-    :return: list of methanol tuples
+    Generates repl number of solvent washes
+    :param repl: number of tuples to return
+    :param wash_no: index of washes already created
+    :return: list of solvent wash tuples
     """
-    methanols_list = list()
+    washes_list = list()
     for i in range(repl):
-        methanols_list.append(_methanol(methanol_no + i))
-    return methanols_list
+        washes_list.append(_wash(wash_no + i))
+    return washes_list
 
 
 def add_pool(pool_no: int):
